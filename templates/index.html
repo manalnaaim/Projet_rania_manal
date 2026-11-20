@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Agent DBA — Analyse & Optimisation SQL</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; margin: 0;
+         background: #0f172a; color: #e2e8f0; }
+  header { background: #1e293b; padding: 1rem 2rem;
+           border-bottom: 2px solid #38bdf8; }
+  header h1 { margin: 0; font-size: 1.4rem; color: #38bdf8; }
+  main { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+  section { background: #1e293b; border-radius: 10px;
+            padding: 1.5rem; margin-bottom: 1.5rem;
+            border: 1px solid #334155; }
+  h2 { margin-top: 0; color: #38bdf8; font-size: 1.1rem; }
+  textarea, input { width: 100%; padding: 0.75rem;
+                    background: #0f172a; color: #e2e8f0;
+                    border: 1px solid #475569; border-radius: 6px;
+                    font-family: 'Consolas', monospace; font-size: 0.95rem; }
+  textarea { min-height: 90px; resize: vertical; }
+  button { background: #38bdf8; color: #0f172a; border: none;
+           padding: 0.7rem 1.5rem; border-radius: 6px;
+           font-weight: 600; cursor: pointer; margin-top: 0.75rem; }
+  button:hover { background: #0ea5e9; }
+  button:disabled { background: #475569; cursor: not-allowed; }
+  .badge { display: inline-block; padding: 0.2rem 0.6rem;
+           border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+  .badge-slow { background: #dc2626; color: white; }
+  .badge-ok   { background: #16a34a; color: white; }
+  .report { background: #0f172a; padding: 1rem; border-radius: 6px;
+            font-family: 'Consolas', monospace; font-size: 0.85rem;
+            white-space: pre-wrap; overflow-x: auto;
+            border-left: 4px solid #38bdf8; margin-top: 1rem; }
+  .index-sql { background: #1a2e05; border-left: 4px solid #84cc16;
+               padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px;
+               font-family: 'Consolas', monospace; font-size: 0.85rem; }
+  .tables-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .table-chip { background: #334155; padding: 0.3rem 0.7rem;
+                border-radius: 4px; font-size: 0.85rem; }
+  .error { background: #7f1d1d; padding: 1rem; border-radius: 6px;
+           margin-top: 1rem; }
+  .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+  .tab { padding: 0.5rem 1rem; background: #334155; border-radius: 6px;
+         cursor: pointer; }
+  .tab.active { background: #38bdf8; color: #0f172a; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🧠 Agent DBA — Analyse & Optimisation SQL</h1>
+</header>
+
+<main>
+
+  <section>
+    <h2>📊 Base de données</h2>
+    <div id="tables" class="tables-list">Chargement…</div>
+  </section>
+
+  <section>
+    <div class="tabs">
+      <div class="tab active" data-tab="diag">🔍 Diagnostic SQL</div>
+      <div class="tab" data-tab="nl2sql">💬 Question en français</div>
+    </div>
+
+    <div id="tab-diag">
+      <h2>Analyser une requête</h2>
+      <textarea id="query"
+        placeholder="SELECT * FROM commandes WHERE client_id = 42"></textarea>
+      <button id="btn-diag">Analyser</button>
+      <div id="result-diag"></div>
+    </div>
+
+    <div id="tab-nl2sql" style="display:none">
+      <h2>Générer du SQL depuis une question</h2>
+      <input id="question"
+        placeholder="ex: les 5 premiers clients de Paris" />
+      <button id="btn-nl2sql">Générer</button>
+      <div id="result-nl2sql"></div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ---- Onglets ----
+document.querySelectorAll('.tab').forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('tab-diag').style.display =
+      t.dataset.tab === 'diag' ? 'block' : 'none';
+    document.getElementById('tab-nl2sql').style.display =
+      t.dataset.tab === 'nl2sql' ? 'block' : 'none';
+  };
+});
+
+// ---- Chargement des tables ----
+async function loadTables() {
+  try {
+    const r = await fetch('/api/tables');
+    const data = await r.json();
+    const el = document.getElementById('tables');
+    el.innerHTML = data.tables.map(t =>
+      `<div class="table-chip">📁 <b>${t.name}</b> — ${t.row_count} lignes
+       (${t.columns.length} cols, ${t.indexes.length} idx)</div>`
+    ).join('');
+  } catch (e) {
+    document.getElementById('tables').textContent = 'Erreur : ' + e;
+  }
+}
+loadTables();
+
+// ---- Diagnostic ----
+document.getElementById('btn-diag').onclick = async () => {
+  const query = document.getElementById('query').value.trim();
+  const out = document.getElementById('result-diag');
+  if (!query) { out.innerHTML = '<div class="error">Requête vide.</div>'; return; }
+
+  out.innerHTML = 'Analyse en cours…';
+  document.getElementById('btn-diag').disabled = true;
+  try {
+    const r = await fetch('/api/diagnostic', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query})
+    });
+    if (!r.ok) {
+      const err = await r.json();
+      out.innerHTML = `<div class="error">⛔ ${err.detail}</div>`;
+      return;
+    }
+    const d = await r.json();
+    const badge = d.is_slow
+      ? '<span class="badge badge-slow">LENT</span>'
+      : '<span class="badge badge-ok">OK</span>';
+    const indexes = d.index_suggestions.length
+      ? d.index_suggestions.map(s =>
+          `<div class="index-sql">${s.sql}<br><small>→ ${s.reason}</small></div>`
+        ).join('')
+      : '<p>Aucun index supplémentaire nécessaire.</p>';
+    const llm = d.llm_advice
+      ? `<h3>Conseil LLM</h3><div class="report">${d.llm_advice}</div>` : '';
+    out.innerHTML = `
+      <p>${badge} Temps : <b>${d.elapsed_ms} ms</b> — ${d.verdict}</p>
+      <div class="report">${d.report}</div>
+      <h3>Index recommandés</h3>${indexes}
+      ${llm}`;
+  } catch (e) {
+    out.innerHTML = `<div class="error">Erreur réseau : ${e}</div>`;
+  } finally {
+    document.getElementById('btn-diag').disabled = false;
+  }
+};
+
+// ---- NL2SQL ----
+document.getElementById('btn-nl2sql').onclick = async () => {
+  const question = document.getElementById('question').value.trim();
+  const out = document.getElementById('result-nl2sql');
+  if (!question) { out.innerHTML = '<div class="error">Question vide.</div>'; return; }
+
+  out.innerHTML = 'Génération…';
+  try {
+    const r = await fetch('/api/nl2sql', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question})
+    });
+    if (!r.ok) {
+      const err = await r.json();
+      out.innerHTML = `<div class="error">⛔ ${err.detail}</div>`;
+      return;
+    }
+    const d = await r.json();
+    out.innerHTML = `
+      <p><b>SQL généré :</b></p>
+      <div class="report">${d.sql}</div>
+      <p>Validité : ${d.valid ? '✅ OK' : '❌ ' + d.error}</p>`;
+  } catch (e) {
+    out.innerHTML = `<div class="error">Erreur : ${e}</div>`;
+  }
+};
+</script>
+</body>
+</html>
